@@ -1,0 +1,130 @@
+
+```
+int Djh_ProcessFrame(short *nearend, short *farend, short *out) {
+	
+	memcpy(xk, farend, N*sizeof(short));
+	memcpy(dk, nearend, N * sizeof(short));
+	memcpy(xx, xo, N * sizeof(short));
+	memcpy(xx + N, xk, N * sizeof(short));
+	memcpy(xo, xk, N * sizeof(short));
+	//fft xx
+	float dataChange[N2];
+	for (int i = 0; i < N2; i++) {
+		dataChange[i] = (float)xx[i];
+	}
+	djh_fft(dataChange, XX, 0);
+
+	memcpy(dd, ddo, N * sizeof(short));
+	memcpy(dd + N, dk, N * sizeof(short));
+	memcpy(ddo, dk, N * sizeof(short));
+	//fft dd
+
+	for (int i = 0; i < N2; i++) {
+		dataChange[i] = (float)dd[i];
+	}
+
+	djh_fft(dataChange, DD, 0);
+	//far end Power estimation
+	for (int i = 0; i < N1; i++) {
+		pn0[i] = (1 - alp)*pn0[i] + alp*(XX[0][i] * XX[0][i] + XX[1][i] * XX[1][i]);
+		pn[i] = pn0[i];
+	}
+
+	memcpy(XFm[0], XX[0], sizeof(float)*N1);
+	memcpy(XFm[1], XX[1], sizeof(float)*N1);
+	
+	for (int j = 0; j < N1; j++) {
+		YFb[0][j] = MulRe(XFm[0][j], XFm[1][j],WFb[0][j], WFb[1][j]);
+		YFb[1][j] = MulIm(XFm[0][j], XFm[1][j], WFb[0][j], WFb[1][j]);
+	}
+	float fft[N2];
+	fft[0] = YFb[0][0];
+	fft[1] = YFb[0][N];
+	for (int i = 1; i < N; i++) {
+		fft[2 * i] = YFb[0][i];
+		fft[2 * i + 1] = YFb[1][i];
+	}
+	//conj
+	/*for (int j = 2; j < N1; j++) {
+		YFbConj[0][j] = YFb[0][j];
+		YFbConj[1][j] = -YFb[1][j];
+	}*/
+	aec_rdft_inverse_128(fft);
+
+	float scale = 2.0f / N2;
+	float ykt[N];//=ykfb
+	float ekfb[N];
+	for (int i = 0; i < N; i++) {
+		ykt[i] = fft[N + i] * scale; // fft scaling
+	}
+	for (int i = 0; i < N; i++) {
+		ekfb[i] = dk[i] - ykt[i];
+	}
+	//out copy
+	short dbuf[N];
+	for (int i = 0; i < N; i++) {
+		dbuf[i] = (short)WEBRTC_SPL_SAT(WEBRTC_SPL_WORD16_MAX, ekfb[i],
+			WEBRTC_SPL_WORD16_MIN);
+	}
+	memcpy(out, dbuf, N*sizeof(short));
+
+	//update WFb
+	memset(fft, 0, sizeof(float) * PART_LEN);
+	memcpy(fft + N, ekfb, sizeof(float) * N);
+	djh_fft(fft, Ek, 0);
+
+	//memcpy(Ek2[0], Ek[0], sizeof(float) * (N + 1));
+	//memcpy(Ek2[1], Ek[1], sizeof(float) * (N + 1));
+
+	for (size_t i = 0; i < N + 1; i++)
+	{
+		Ek2[0][i] = Ek[0][i] / (pn[i] + 0.001);
+		Ek2[1][i] = Ek[1][i] / (pn[i] + 0.001);
+	}
+	int i;
+	float absEf;
+	for (i = 0; i < (N1); i++) {
+		//Ek2[0][i] /= (aec->xPow[i] + 1e-10f);
+		//Ek2[1][i] /= (aec->xPow[i] + 1e-10f);
+		absEf = sqrtf(Ek2[0][i] * Ek2[0][i] + Ek2[1][i] * Ek2[1][i]);
+
+		if (absEf > threshold) {
+			absEf = threshold / (absEf + 1e-10f);
+			Ek2[0][i] *= absEf;
+			Ek2[1][i] *= absEf;
+		}
+
+		// Stepsize factor
+		Ek2[0][i] *= mufb;
+		Ek2[1][i] *= mufb;
+	}
+
+	memset(fft + N, 0, sizeof(float) * N);
+	for (int j = 0; j < N; j++) {
+		fft[2 * j] = MulRe(XFm[0][j],-XFm[1][j],Ek2[0][j], Ek2[1][j]);
+		fft[2 * j + 1] = MulIm(XFm[0][j],-XFm[1][j],Ek2[0][j], Ek2[1][j]);
+	}
+	fft[1] = MulRe(XFm[0][N],-XFm[1][N],Ek2[0][N], Ek2[1][N]);
+
+	aec_rdft_inverse_128(fft);
+	memset(fft + N, 0, sizeof(float) * N);
+
+	// fft scaling
+	{
+		float scale = 2.0f / N2;
+		for (int j = 0; j < N; j++) {
+			fft[j] *= scale;
+		}
+	}
+	aec_rdft_forward_128(fft);
+
+	WFb[0][0] += fft[0];
+	WFb[0][0 + N] += fft[1];
+
+	for (int j = 1; j < N; j++) {
+		WFb[0][j] += fft[2 * j];
+		WFb[1][j] += fft[2 * j + 1];
+	}
+	
+}
+```
